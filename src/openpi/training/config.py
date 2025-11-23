@@ -853,7 +853,6 @@ _CONFIGS = [
         ).get_freeze_filter(),
         num_train_steps=30_000,
     ),
-
     #
     # Fine-tuning Aloha configs.
     #
