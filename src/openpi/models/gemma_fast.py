@@ -26,10 +26,11 @@ import jax
 import jax.numpy as jnp
 import ml_collections
 
+import openpi.models.adapters as adapters
 import openpi.models.lora as lora
 import openpi.shared.array_typing as at
 
-Variant = Literal["gemma_2b", "gemma_2b_lora"]
+Variant = Literal["gemma_2b", "gemma_2b_lora", "gemma_2b_adapter"]
 
 
 def get_config(variant):
@@ -67,6 +68,27 @@ def get_config(variant):
                 "lora_configs": {
                     "attn": lora.LoRAConfig(rank=16, alpha=16.0),
                     "ffn": lora.LoRAConfig(rank=16, alpha=16.0),
+                },
+            }
+        )
+    if variant == "gemma_2b_adapter":
+        adapter_cfg = adapters.AdapterConfig()
+        return ml_collections.ConfigDict(
+            {
+                "variant": variant,
+                "width": 2048,
+                "depth": 18,
+                "mlp_dim": 16_384,
+                "num_heads": 8,
+                "num_kv_heads": 1,
+                "head_dim": 256,
+                "norm_eps": 1e-6,
+                "vocab_size": 257_152,
+                "scan": True,
+                "remat_policy": "nothing_saveable",
+                "adapter_configs": {
+                    "attn": adapter_cfg,
+                    "ffn": adapter_cfg,
                 },
             }
         )
@@ -238,6 +260,7 @@ class Block(nn.Module):
     dropout_bdims: tuple[int, ...] = ()
     cache_dtype: str | None = None
     lora_configs: ml_collections.ConfigDict = dataclasses.field(default_factory=ml_collections.ConfigDict)
+    adapter_configs: ml_collections.ConfigDict = dataclasses.field(default_factory=ml_collections.ConfigDict)
 
     def setup(self):
         self.pre_attention_norm = RMSNorm()
@@ -264,12 +287,24 @@ class Block(nn.Module):
         attn_output, kv_cache = self.attn(inputs_normalized, positions, attn_mask, kv_cache, decode, deterministic)
         attn_output = self.drop(attn_output, deterministic)
         attn_output += x
+        attn_output = self._apply_adapter(attn_output, "attn", deterministic)
         residual = attn_output
         attn_output = self.pre_ffw_norm(attn_output)
         outputs = self.mlp(attn_output)
         outputs = self.drop(outputs, deterministic)
         outputs = residual + outputs
+        outputs = self._apply_adapter(outputs, "ffn", deterministic)
         return outputs, kv_cache
+
+    def _apply_adapter(self, x, key: str, deterministic: bool):
+        adapter_config = self.adapter_configs.get(key)
+        if adapter_config is None:
+            return x
+        return adapters.AdapterLayer(
+            hidden_dim=self.embed_dim,
+            config=adapter_config,
+            name=f"{key}_adapter",
+        )(x, deterministic=deterministic)
 
 
 KVCache: TypeAlias = tuple[at.Int[at.Array, " b"], at.Float[at.Array, "b _t _k _h"], at.Float[at.Array, "b _t _v _h"]]
@@ -298,6 +333,7 @@ class Module(nn.Module):
     scan: bool = False
     remat_policy: str = "none"
     lora_configs: ml_collections.ConfigDict = dataclasses.field(default_factory=ml_collections.ConfigDict)
+    adapter_configs: ml_collections.ConfigDict = dataclasses.field(default_factory=ml_collections.ConfigDict)
 
     @nn.compact
     def __call__(
@@ -390,6 +426,7 @@ class Module(nn.Module):
             "dropout_bdims": self.dropout_bdims,
             "cache_dtype": self.cache_dtype,
             "lora_configs": self.lora_configs,
+            "adapter_configs": self.adapter_configs,
         }
         layers = self.scope.push("layers")
         blocks = [

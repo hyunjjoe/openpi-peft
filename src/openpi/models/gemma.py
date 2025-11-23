@@ -34,6 +34,7 @@ import flax.linen as nn
 import jax
 import jax.numpy as jnp
 
+import openpi.models.adapters as adapters
 import openpi.models.lora as lora
 import openpi.shared.array_typing as at
 import openpi.training.sharding as sharding
@@ -50,9 +51,18 @@ class Config:
     num_kv_heads: int
     head_dim: int
     lora_configs: dict[str, lora.LoRAConfig] = dataclasses.field(default_factory=dict)
+    adapter_configs: dict[str, adapters.AdapterConfig] = dataclasses.field(default_factory=dict)
 
 
-Variant = Literal["dummy", "gemma_300m", "gemma_300m_lora", "gemma_2b", "gemma_2b_lora"]
+Variant = Literal[
+    "dummy",
+    "gemma_300m",
+    "gemma_300m_lora",
+    "gemma_300m_adapter",
+    "gemma_2b",
+    "gemma_2b_lora",
+    "gemma_2b_adapter",
+]
 
 
 def get_config(variant: Variant) -> Config:
@@ -95,6 +105,17 @@ def get_config(variant: Variant) -> Config:
             head_dim=256,
             lora_configs={"attn": lora.LoRAConfig(rank=16, alpha=16.0), "ffn": lora.LoRAConfig(rank=16, alpha=16.0)},
         )
+    if variant == "gemma_2b_adapter":
+        adapter_cfg = adapters.AdapterConfig()
+        return Config(
+            width=2048,
+            depth=18,
+            mlp_dim=16_384,
+            num_heads=8,
+            num_kv_heads=1,
+            head_dim=256,
+            adapter_configs={"attn": adapter_cfg, "ffn": adapter_cfg},
+        )
     if variant == "gemma_300m_lora":
         # 311M params
         return Config(
@@ -105,6 +126,17 @@ def get_config(variant: Variant) -> Config:
             num_kv_heads=1,
             head_dim=256,
             lora_configs={"attn": lora.LoRAConfig(rank=32, alpha=32.0), "ffn": lora.LoRAConfig(rank=32, alpha=32.0)},
+        )
+    if variant == "gemma_300m_adapter":
+        adapter_cfg = adapters.AdapterConfig()
+        return Config(
+            width=1024,
+            depth=18,
+            mlp_dim=4096,
+            num_heads=8,
+            num_kv_heads=1,
+            head_dim=256,
+            adapter_configs={"attn": adapter_cfg, "ffn": adapter_cfg},
         )
     raise ValueError(f"Unknown variant: {variant}")
 
@@ -310,6 +342,8 @@ class Block(nn.Module):
         post_attn = sharding.activation_sharding_constraint(post_attn)
         xs = [_gated_residual(x, y, gate) for x, y, gate in zip(xs, post_attn, gates, strict=True)]
         xs = sharding.activation_sharding_constraint(xs)
+        xs = _apply_stage_adapters(xs, self.configs, "attn", deterministic)
+        xs = sharding.activation_sharding_constraint(xs)
 
         out = []
         gates = []
@@ -328,6 +362,8 @@ class Block(nn.Module):
         out = sharding.activation_sharding_constraint(out)
         out = jax.tree.map(lambda x: drop(x, deterministic), out)
         xs = [_gated_residual(x, y, gate) for x, y, gate in zip(xs, out, gates, strict=True)]
+        xs = sharding.activation_sharding_constraint(xs)
+        xs = _apply_stage_adapters(xs, self.configs, "ffn", deterministic)
         xs = sharding.activation_sharding_constraint(xs)
 
         return xs, kv_cache
@@ -457,3 +493,17 @@ def _gated_residual(x, y, gate):
     if gate is None:
         return x + y
     return x + y * gate
+
+
+def _apply_stage_adapters(xs, configs, key: str, deterministic: bool):
+    updated = []
+    for i, (x, config) in enumerate(zip(xs, configs, strict=True)):
+        adapter_config = config.adapter_configs.get(key)
+        if x is not None and adapter_config is not None:
+            x = adapters.AdapterLayer(
+                hidden_dim=config.width,
+                config=adapter_config,
+                name=_name(f"{key}_adapter", i),
+            )(x, deterministic=deterministic)
+        updated.append(x)
+    return updated

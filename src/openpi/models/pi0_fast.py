@@ -126,9 +126,14 @@ class Pi0FASTConfig(_model.BaseModelConfig):
 
     def get_freeze_filter(self) -> nnx.filterlib.Filter:
         """Returns the freeze filter based on the model config."""
+        if not any(token in self.paligemma_variant for token in ("lora", "adapter")):
+            return nnx.Nothing
+        filters = [nnx_utils.PathRegex(".*llm.*")]
         if "lora" in self.paligemma_variant:
-            return nnx.All(nnx_utils.PathRegex(".*llm.*"), nnx.Not(nnx_utils.PathRegex(".*lora.*")))
-        return nnx.Nothing
+            filters.append(nnx.Not(nnx_utils.PathRegex(".*lora.*")))
+        if "adapter" in self.paligemma_variant:
+            filters.append(nnx.Not(nnx_utils.PathRegex(".*adapter.*")))
+        return nnx.All(*filters)
 
 
 class Pi0FAST(_model.BaseModel):
