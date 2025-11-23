@@ -23,4 +23,3 @@ def test_adapter_layer_identity_with_zero_init():
     params = layer.init(key, x, deterministic=True)
     y = layer.apply(params, x, deterministic=True)
     assert jnp.allclose(x, y)
-

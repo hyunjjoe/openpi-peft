@@ -416,7 +416,7 @@ class Block(nn.Module):
         post_attn = sharding.activation_sharding_constraint(post_attn)
         xs = [_gated_residual(x, y, gate) for x, y, gate in zip(xs, post_attn, gates, strict=True)]
         xs = sharding.activation_sharding_constraint(xs)
-        xs = _apply_stage_adapters(xs, self.configs, "attn", deterministic)
+        xs = _apply_stage_adapters(xs, self.configs, "attn", deterministic=deterministic)
         xs = sharding.activation_sharding_constraint(xs)
 
         out = []
@@ -437,7 +437,7 @@ class Block(nn.Module):
         out = jax.tree.map(lambda x: drop(x, deterministic), out)
         xs = [_gated_residual(x, y, gate) for x, y, gate in zip(xs, out, gates, strict=True)]
         xs = sharding.activation_sharding_constraint(xs)
-        xs = _apply_stage_adapters(xs, self.configs, "ffn", deterministic)
+        xs = _apply_stage_adapters(xs, self.configs, "ffn", deterministic=deterministic)
         xs = sharding.activation_sharding_constraint(xs)
 
         return xs, kv_cache
@@ -569,12 +569,12 @@ def _gated_residual(x, y, gate):
     return x + y * gate
 
 
-def _apply_stage_adapters(xs, configs, key: str, deterministic: bool):
+def _apply_stage_adapters(xs, configs, key: str, *, deterministic: bool):
     updated = []
     for i, (x, config) in enumerate(zip(xs, configs, strict=True)):
         adapter_config = config.adapter_configs.get(key)
         if x is not None and adapter_config is not None:
-            x = adapters.AdapterLayer(
+            x = adapters.AdapterLayer(  # noqa: PLW2901
                 hidden_dim=config.width,
                 config=adapter_config,
                 name=_name(f"{key}_adapter", i),
