@@ -81,8 +81,8 @@ class Pi0Config(_model.BaseModelConfig):
         filters = []
         gemma_params_filter = nnx_utils.PathRegex(".*llm.*")
         action_expert_params_filter = nnx_utils.PathRegex(".*llm.*_1.*")
-        uses_pali_peft = any(token in self.paligemma_variant for token in ("lora", "adapter"))
-        uses_action_peft = any(token in self.action_expert_variant for token in ("lora", "adapter"))
+        uses_pali_peft = any(token in self.paligemma_variant for token in ("lora", "adapter", "prefix"))
+        uses_action_peft = any(token in self.action_expert_variant for token in ("lora", "adapter", "prefix"))
         if uses_pali_peft:
             filters.append(
                 gemma_params_filter,
@@ -106,4 +106,9 @@ class Pi0Config(_model.BaseModelConfig):
             filters.append(
                 nnx.Not(nnx_utils.PathRegex(".*adapter.*")),
             )
+        if "prefix" in self.paligemma_variant or "prefix" in self.action_expert_variant:
+            filters.append(
+                nnx.Not(nnx_utils.PathRegex(".*prefix.*"))
+                )
+
         return nnx.All(*filters)

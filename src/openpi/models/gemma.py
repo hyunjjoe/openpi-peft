@@ -35,6 +35,7 @@ import jax
 import jax.numpy as jnp
 
 import openpi.models.adapters as adapters
+import openpi.models.prefix as prefix
 import openpi.models.lora as lora
 import openpi.shared.array_typing as at
 import openpi.training.sharding as sharding
@@ -52,16 +53,18 @@ class Config:
     head_dim: int
     lora_configs: dict[str, lora.LoRAConfig] = dataclasses.field(default_factory=dict)
     adapter_configs: dict[str, adapters.AdapterConfig] = dataclasses.field(default_factory=dict)
-
+    prefix_config: prefix.PrefixConfig | None = None
 
 Variant = Literal[
     "dummy",
     "gemma_300m",
     "gemma_300m_lora",
     "gemma_300m_adapter",
+    "gemma_300m_prefix",
     "gemma_2b",
     "gemma_2b_lora",
     "gemma_2b_adapter",
+    "gemma_2b_prefix",
 ]
 
 
@@ -137,6 +140,26 @@ def get_config(variant: Variant) -> Config:
             num_kv_heads=1,
             head_dim=256,
             adapter_configs={"attn": adapter_cfg, "ffn": adapter_cfg},
+        )
+    if variant == "gemma_2b_prefix":
+        return Config(
+            width=2048,
+            depth=18,
+            mlp_dim=16_384,
+            num_heads=8,
+            num_kv_heads=1,
+            head_dim=256,
+            prefix_config=prefix.PrefixConfig(),
+        )
+    if variant == "gemma_300m_prefix":
+        return Config(
+            width=1024,
+            depth=18,
+            mlp_dim=4096,
+            num_heads=8,
+            num_kv_heads=1,
+            head_dim=256,
+            prefix_config=prefix.PrefixConfig(),
         )
     raise ValueError(f"Unknown variant: {variant}")
 
@@ -237,6 +260,40 @@ class Attention(nn.Module):
 
         k = _apply_rope(k, positions=positions)
 
+        cfg = self.configs[0].prefix_config
+        # use_prefix = cfg is not None and cfg.num_prefix_tokens > 0
+        cfg = None
+        for c in self.configs:
+            if c.prefix_config is not None:
+                if cfg is None:
+                    cfg = c.prefix_config
+                else:
+                    if cfg.num_prefix_tokens != c.prefix_config.num_prefix_tokens:
+                        raise ValueError("MISMATCH in prefix_config across experts.")
+        use_prefix = cfg is not None and cfg.num_prefix_tokens > 0
+
+
+        if use_prefix and kv_cache is None:
+            prefix_mod = prefix.KVPrefix(
+                num_kv_heads=self.configs[0].num_kv_heads,
+                head_dim=self.configs[0].head_dim,
+                config=cfg,
+                name="kv_prefix",
+            )
+            prefix_k, prefix_v = prefix_mod(
+                batch_size=q.shape[0],
+                deterministic=True,
+                dtype=dtype,
+            )  
+
+            k = jnp.concatenate([prefix_k, k], axis=1)
+            v = jnp.concatenate([prefix_v, v], axis=1)
+
+            b, _, t, s = attn_mask.shape
+            p = cfg.num_prefix_tokens
+            prefix_mask = jnp.ones((b, 1, t, p), dtype=attn_mask.dtype)
+            attn_mask = jnp.concatenate([prefix_mask, attn_mask], axis=-1)
+
         # should still be half-precision here (if input was half-precision)
         assert q.dtype == k.dtype == v.dtype == dtype
 
@@ -244,6 +301,23 @@ class Attention(nn.Module):
             cache_k, cache_v = kv_cache
             k = jnp.concatenate([cache_k, k], axis=1)
             v = jnp.concatenate([cache_v, v], axis=1)
+
+            if use_prefix:
+                b, _, t, s = attn_mask.shape
+                s_final = k.shape[1]
+                extra = s_final - s
+                if extra < 0:
+                    raise ValueError(
+                        f"Attention mask has more key positions ({s}) than k ({s_final}) "
+                        "– this should NEVER happen."
+                    )
+                if extra > 0:
+                    assert extra == cfg.num_prefix_tokens, (
+                        f"Unexpected extra KV slots from cache: {extra}, "
+                        f"expected {cfg.num_prefix_tokens} from prefix tuning."
+                    )
+                    extra_mask = jnp.ones((b, 1, t, extra), dtype=attn_mask.dtype)
+                    attn_mask = jnp.concatenate([extra_mask, attn_mask], axis=-1)
 
         q = einops.rearrange(q, "B T (K G) H -> B T K G H", K=self.configs[0].num_kv_heads)
         logits = jnp.einsum("BTKGH,BSKH->BKGTS", q, k, preferred_element_type=jnp.float32)
