@@ -107,8 +107,6 @@ class Pi0Config(_model.BaseModelConfig):
                 nnx.Not(nnx_utils.PathRegex(".*adapter.*")),
             )
         if "prefix" in self.paligemma_variant or "prefix" in self.action_expert_variant:
-            filters.append(
-                nnx.Not(nnx_utils.PathRegex(".*prefix.*"))
-                )
+            filters.append(nnx.Not(nnx_utils.PathRegex(".*prefix.*")))
 
         return nnx.All(*filters)

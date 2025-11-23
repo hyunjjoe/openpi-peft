@@ -43,4 +43,3 @@ class AdapterLayer(nn.Module):
             z = nn.Dropout(rate=self.config.dropout_rate)(z, deterministic=deterministic)
         z = up(z)
         return x + z.astype(dtype) * self.config.scaling
-

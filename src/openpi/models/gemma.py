@@ -35,8 +35,8 @@ import jax
 import jax.numpy as jnp
 
 import openpi.models.adapters as adapters
-import openpi.models.prefix as prefix
 import openpi.models.lora as lora
+import openpi.models.prefix as prefix
 import openpi.shared.array_typing as at
 import openpi.training.sharding as sharding
 
@@ -54,6 +54,7 @@ class Config:
     lora_configs: dict[str, lora.LoRAConfig] = dataclasses.field(default_factory=dict)
     adapter_configs: dict[str, adapters.AdapterConfig] = dataclasses.field(default_factory=dict)
     prefix_config: prefix.PrefixConfig | None = None
+
 
 Variant = Literal[
     "dummy",
@@ -267,11 +268,9 @@ class Attention(nn.Module):
             if c.prefix_config is not None:
                 if cfg is None:
                     cfg = c.prefix_config
-                else:
-                    if cfg.num_prefix_tokens != c.prefix_config.num_prefix_tokens:
-                        raise ValueError("MISMATCH in prefix_config across experts.")
+                elif cfg.num_prefix_tokens != c.prefix_config.num_prefix_tokens:
+                    raise ValueError("MISMATCH in prefix_config across experts.")
         use_prefix = cfg is not None and cfg.num_prefix_tokens > 0
-
 
         if use_prefix and kv_cache is None:
             prefix_mod = prefix.KVPrefix(
@@ -284,7 +283,7 @@ class Attention(nn.Module):
                 batch_size=q.shape[0],
                 deterministic=True,
                 dtype=dtype,
-            )  
+            )
 
             k = jnp.concatenate([prefix_k, k], axis=1)
             v = jnp.concatenate([prefix_v, v], axis=1)
@@ -308,8 +307,7 @@ class Attention(nn.Module):
                 extra = s_final - s
                 if extra < 0:
                     raise ValueError(
-                        f"Attention mask has more key positions ({s}) than k ({s_final}) "
-                        "– this should NEVER happen."
+                        f"Attention mask has more key positions ({s}) than k ({s_final}) - this should NEVER happen.",
                     )
                 if extra > 0:
                     assert extra == cfg.num_prefix_tokens, (
@@ -416,7 +414,7 @@ class Block(nn.Module):
         post_attn = sharding.activation_sharding_constraint(post_attn)
         xs = [_gated_residual(x, y, gate) for x, y, gate in zip(xs, post_attn, gates, strict=True)]
         xs = sharding.activation_sharding_constraint(xs)
-        xs = _apply_stage_adapters(xs, self.configs, "attn", deterministic)
+        xs = _apply_stage_adapters(xs, self.configs, "attn", deterministic=deterministic)
         xs = sharding.activation_sharding_constraint(xs)
 
         out = []
@@ -437,7 +435,7 @@ class Block(nn.Module):
         out = jax.tree.map(lambda x: drop(x, deterministic), out)
         xs = [_gated_residual(x, y, gate) for x, y, gate in zip(xs, out, gates, strict=True)]
         xs = sharding.activation_sharding_constraint(xs)
-        xs = _apply_stage_adapters(xs, self.configs, "ffn", deterministic)
+        xs = _apply_stage_adapters(xs, self.configs, "ffn", deterministic=deterministic)
         xs = sharding.activation_sharding_constraint(xs)
 
         return xs, kv_cache
@@ -569,12 +567,12 @@ def _gated_residual(x, y, gate):
     return x + y * gate
 
 
-def _apply_stage_adapters(xs, configs, key: str, deterministic: bool):
+def _apply_stage_adapters(xs, configs, key: str, *, deterministic: bool):
     updated = []
     for i, (x, config) in enumerate(zip(xs, configs, strict=True)):
         adapter_config = config.adapter_configs.get(key)
         if x is not None and adapter_config is not None:
-            x = adapters.AdapterLayer(
+            x = adapters.AdapterLayer(  # noqa: PLW2901
                 hidden_dim=config.width,
                 config=adapter_config,
                 name=_name(f"{key}_adapter", i),

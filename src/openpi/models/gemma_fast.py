@@ -287,16 +287,16 @@ class Block(nn.Module):
         attn_output, kv_cache = self.attn(inputs_normalized, positions, attn_mask, kv_cache, decode, deterministic)
         attn_output = self.drop(attn_output, deterministic)
         attn_output += x
-        attn_output = self._apply_adapter(attn_output, "attn", deterministic)
+        attn_output = self._apply_adapter(attn_output, "attn", deterministic=deterministic)
         residual = attn_output
         attn_output = self.pre_ffw_norm(attn_output)
         outputs = self.mlp(attn_output)
         outputs = self.drop(outputs, deterministic)
         outputs = residual + outputs
-        outputs = self._apply_adapter(outputs, "ffn", deterministic)
+        outputs = self._apply_adapter(outputs, "ffn", deterministic=deterministic)
         return outputs, kv_cache
 
-    def _apply_adapter(self, x, key: str, deterministic: bool):
+    def _apply_adapter(self, x, key: str, *, deterministic: bool):
         adapter_config = self.adapter_configs.get(key)
         if adapter_config is None:
             return x
