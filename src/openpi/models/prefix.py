@@ -23,7 +23,6 @@ class KVPrefix(nn.Module):
         deterministic: bool,
         dtype=jnp.bfloat16,
     ) -> tuple[jnp.ndarray, jnp.ndarray]:
-
         p = self.config.num_prefix_tokens
         k = self.param(
             "k",

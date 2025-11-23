@@ -35,8 +35,8 @@ import jax
 import jax.numpy as jnp
 
 import openpi.models.adapters as adapters
-import openpi.models.prefix as prefix
 import openpi.models.lora as lora
+import openpi.models.prefix as prefix
 import openpi.shared.array_typing as at
 import openpi.training.sharding as sharding
 
@@ -54,6 +54,7 @@ class Config:
     lora_configs: dict[str, lora.LoRAConfig] = dataclasses.field(default_factory=dict)
     adapter_configs: dict[str, adapters.AdapterConfig] = dataclasses.field(default_factory=dict)
     prefix_config: prefix.PrefixConfig | None = None
+
 
 Variant = Literal[
     "dummy",
@@ -267,11 +268,9 @@ class Attention(nn.Module):
             if c.prefix_config is not None:
                 if cfg is None:
                     cfg = c.prefix_config
-                else:
-                    if cfg.num_prefix_tokens != c.prefix_config.num_prefix_tokens:
-                        raise ValueError("MISMATCH in prefix_config across experts.")
+                elif cfg.num_prefix_tokens != c.prefix_config.num_prefix_tokens:
+                    raise ValueError("MISMATCH in prefix_config across experts.")
         use_prefix = cfg is not None and cfg.num_prefix_tokens > 0
-
 
         if use_prefix and kv_cache is None:
             prefix_mod = prefix.KVPrefix(
@@ -284,7 +283,7 @@ class Attention(nn.Module):
                 batch_size=q.shape[0],
                 deterministic=True,
                 dtype=dtype,
-            )  
+            )
 
             k = jnp.concatenate([prefix_k, k], axis=1)
             v = jnp.concatenate([prefix_v, v], axis=1)
@@ -308,8 +307,7 @@ class Attention(nn.Module):
                 extra = s_final - s
                 if extra < 0:
                     raise ValueError(
-                        f"Attention mask has more key positions ({s}) than k ({s_final}) "
-                        "– this should NEVER happen."
+                        f"Attention mask has more key positions ({s}) than k ({s_final}) - this should NEVER happen.",
                     )
                 if extra > 0:
                     assert extra == cfg.num_prefix_tokens, (
