@@ -823,7 +823,7 @@ _CONFIGS = [
             discrete_state_input=False,
             paligemma_variant="gemma_2b",
             action_expert_variant="gemma_300m",
-            topk_layers=4,
+            topk_layers=2,
             topk_pali=True,
             topk_action_expert=False,
         ),
