@@ -667,6 +667,34 @@ _CONFIGS = [
         num_train_steps=30_000,
     ),
     TrainConfig(
+        # Example of pure top-k fine-tuning: only the top `k` Gemma layers are trainable.
+        name="pi0_libero_topk4",
+        model=pi0_config.Pi0Config(
+            # Be explicit about backbone variants to match the base checkpoint.
+            paligemma_variant="gemma_2b",
+            action_expert_variant="gemma_300m",
+            topk_layers=4,
+        ),
+        data=LeRobotLiberoDataConfig(
+            # Reuse the same Libero fine-tuning dataset as the adapters config.
+            repo_id="hyunjjoe/libero_ft_demos",
+            base_config=DataConfig(prompt_from_task=True),
+            extra_delta_transform=False,
+            # Reuse the norm stats that were already computed for `pi05_libero_adapters`.
+            assets=AssetsConfig(
+                assets_dir="assets/pi05_libero_adapters",
+                asset_id="hyunjjoe/libero_ft_demos",
+            ),
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi0_base/params"),
+        num_train_steps=30_000,
+        freeze_filter=pi0_config.Pi0Config(
+            paligemma_variant="gemma_2b",
+            action_expert_variant="gemma_300m",
+            topk_layers=4,
+        ).get_freeze_filter(),
+    ),
+    TrainConfig(
         name="pi0_libero_low_mem_finetune",
         # Here is an example of loading a pi0 model for LoRA fine-tuning.
         model=pi0_config.Pi0Config(paligemma_variant="gemma_2b_lora", action_expert_variant="gemma_300m_lora"),
