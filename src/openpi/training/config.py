@@ -814,7 +814,7 @@ _CONFIGS = [
         ema_decay=None,
     ),
     TrainConfig(
-        name="pi05_libero_topk4",
+        name="pi05_libero_topk2",
         # Pure top-k fine-tuning of pi05: no adapters/LoRA, just freeze all but the
         # top 4 transformer blocks in the Gemma stack.
         model=pi0_config.Pi0Config(
@@ -856,7 +856,7 @@ _CONFIGS = [
             discrete_state_input=False,
             paligemma_variant="gemma_2b",
             action_expert_variant="gemma_300m",
-            topk_layers=4,
+            topk_layers=2,
             topk_pali=True,
             topk_action_expert=False,
         ).get_freeze_filter(),
