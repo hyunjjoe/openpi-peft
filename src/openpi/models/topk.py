@@ -1,5 +1,4 @@
 import dataclasses
-from typing import Callable
 
 import flax.nnx as nnx
 
@@ -23,8 +22,9 @@ class TopKLayerFreezeConfig:
     def make_freeze_filter(self) -> nnx.filterlib.Filter:
         """Return an nnx filter that freezes all but the top-k Gemma layers.
 
-        We identify layers via the `"layers/<idx>"` segment in the path under the
-        bridged LLM module (which contains `"llm"` in its path).
+        We identify layers via the `"block_<idx>"` segment in the path under the
+        bridged LLM module (which contains `"llm"` in its path). This matches the
+        layout used by `gemma_topk.TopKModule`.
 
         - If `k_unfrozen <= 0`, all LLM layers are frozen.
         - If `k_unfrozen >= total_layers`, no layer-level freezing is applied.
@@ -45,26 +45,20 @@ class TopKLayerFreezeConfig:
 
         def _freeze_early_layers(path: nnx.filterlib.PathParts, x) -> bool:  # noqa: ANN001
             # Only operate on the LLM subtree.
-            if not any(str(p) == "llm" for p in path):
+            parts = [str(p) for p in path]
+            if "llm" not in parts:
                 return False
 
-            # Find "layers/<idx>" in the path, if present.
-            try:
-                idx = next(i for i, p in enumerate(path) if str(p) == "layers")
-            except StopIteration:
-                return False
+            # Find "block_<idx>" in the path, if present.
+            for p in parts:
+                if p.startswith("block_"):
+                    try:
+                        layer_idx = int(p.split("_", maxsplit=1)[1])
+                    except ValueError:
+                        return False
+                    # Freeze all layers strictly before the cutoff; keep the top-k trainable.
+                    return layer_idx < cutoff
 
-            if idx + 1 >= len(path):
-                return False
-
-            layer_part = path[idx + 1]
-            try:
-                # Layer indices come either as ints or as digit-like strings.
-                layer_idx = int(layer_part) if not isinstance(layer_part, int) else layer_part
-            except (TypeError, ValueError):
-                return False
-
-            # Freeze all layers strictly before the cutoff; keep the top-k trainable.
-            return layer_idx < cutoff
+            return False
 
         return _freeze_early_layers

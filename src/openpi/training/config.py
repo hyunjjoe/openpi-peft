@@ -843,7 +843,10 @@ _CONFIGS = [
             decay_lr=5e-5,
         ),
         optimizer=_optimizer.AdamW(clip_gradient_norm=1.0),
-        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_libero/params"),
+        weight_loader=weight_loaders.TopKGemmaCheckpointWeightLoader(
+            "gs://openpi-assets/checkpoints/pi05_libero/params",
+            total_layers=18,
+        ),
         num_train_steps=30_000,
         freeze_filter=pi0_config.Pi0Config(
             pi05=True,
