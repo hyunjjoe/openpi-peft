@@ -26,6 +26,10 @@ class Pi0Config(_model.BaseModelConfig):
     # freezing all but the top `topk_layers` transformer blocks. This is a pure
     # freeze scheme: no additional parameters are introduced.
     topk_layers: int | None = None
+    # Controls which experts top-k freezing should apply to. By default, both
+    # PaliGemma (paligemma_variant) and the action expert are included.
+    topk_pali: bool = True
+    topk_action_expert: bool = True
 
     # Set the model specific defaults.
     action_dim: int = 32
@@ -109,8 +113,23 @@ class Pi0Config(_model.BaseModelConfig):
             topk_cfg = _topk.TopKLayerFreezeConfig(
                 total_layers=paligemma_cfg.depth,
                 k_unfrozen=self.topk_layers,
+                include_pali=self.topk_pali,
+                include_action=self.topk_action_expert,
             )
             filters.append(topk_cfg.make_freeze_filter())
+
+            # Optionally freeze entire experts when excluded from top-k.
+            # If topk_action_expert is False, freeze all action-expert LLM params.
+            if not self.topk_action_expert:
+                filters.append(action_expert_params_filter)
+            # If topk_pali is False, freeze all PaliGemma LLM params (without the "_1" suffix).
+            if not self.topk_pali:
+                filters.append(
+                    nnx.All(
+                        gemma_params_filter,
+                        nnx.Not(action_expert_params_filter),
+                    )
+                )
 
         if not filters:
             return nnx.Nothing

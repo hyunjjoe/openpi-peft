@@ -18,6 +18,10 @@ class TopKLayerFreezeConfig:
     total_layers: int
     # Number of top (closest to output) layers to keep trainable.
     k_unfrozen: int
+    # Whether to apply top-k freezing to the PaliGemma expert (no "_1" suffix).
+    include_pali: bool = True
+    # Whether to apply top-k freezing to the action expert (names with "_1" suffix).
+    include_action: bool = True
 
     def make_freeze_filter(self) -> nnx.filterlib.Filter:
         """Return an nnx filter that freezes all but the top-k Gemma layers.
@@ -31,7 +35,7 @@ class TopKLayerFreezeConfig:
         """
         # Edge cases.
         if self.k_unfrozen <= 0:
-            # Freeze all LLM parameters.
+            # Freeze all LLM parameters (both experts).
             def freeze_all_llm(path: nnx.filterlib.PathParts, x) -> bool:  # noqa: ANN001
                 return any(str(p) == "llm" for p in path)
 
@@ -47,6 +51,14 @@ class TopKLayerFreezeConfig:
             # Only operate on the LLM subtree.
             parts = [str(p) for p in path]
             if "llm" not in parts:
+                return False
+
+            # Determine which expert this parameter belongs to.
+            is_action = any(p.endswith("_1") for p in parts)
+            is_pali = not is_action
+
+            subject = (self.include_pali and is_pali) or (self.include_action and is_action)
+            if not subject:
                 return False
 
             # Find "block_<idx>" in the path, if present.

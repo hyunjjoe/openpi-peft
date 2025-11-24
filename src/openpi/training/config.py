@@ -824,6 +824,8 @@ _CONFIGS = [
             paligemma_variant="gemma_2b",
             action_expert_variant="gemma_300m",
             topk_layers=4,
+            topk_pali=True,
+            topk_action_expert=False,
         ),
         data=LeRobotLiberoDataConfig(
             repo_id="hyunjjoe/libero_ft_demos",
@@ -855,6 +857,8 @@ _CONFIGS = [
             paligemma_variant="gemma_2b",
             action_expert_variant="gemma_300m",
             topk_layers=4,
+            topk_pali=True,
+            topk_action_expert=False,
         ).get_freeze_filter(),
         ema_decay=None,
     ),
