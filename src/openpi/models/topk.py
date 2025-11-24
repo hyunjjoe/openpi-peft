@@ -30,6 +30,13 @@ class TopKLayerFreezeConfig:
         bridged LLM module (which contains `"llm"` in its path). This matches the
         layout used by `gemma_topk.TopKModule`.
 
+        Within the selected experts (see `include_pali` / `include_action`), this
+        implements:
+          - For blocks with idx < cutoff (= total_layers - k_unfrozen): freeze all
+            parameters in those blocks.
+          - For blocks with idx >= cutoff: freeze everything *except* the attention
+            output projections (`attn_vec_einsum`) which remain unfrozen.
+
         - If `k_unfrozen <= 0`, all LLM layers are frozen.
         - If `k_unfrozen >= total_layers`, no layer-level freezing is applied.
         """
@@ -57,6 +64,12 @@ class TopKLayerFreezeConfig:
             is_action = any(p.endswith("_1") for p in parts)
             is_pali = not is_action
 
+            # If an expert is explicitly excluded from top-k, freeze all its LLM params.
+            if is_action and not self.include_action:
+                return True
+            if is_pali and not self.include_pali:
+                return True
+
             subject = (self.include_pali and is_pali) or (self.include_action and is_action)
             if not subject:
                 return False
@@ -67,10 +80,19 @@ class TopKLayerFreezeConfig:
                     try:
                         layer_idx = int(p.split("_", maxsplit=1)[1])
                     except ValueError:
-                        return False
-                    # Freeze all layers strictly before the cutoff; keep the top-k trainable.
-                    return layer_idx < cutoff
+                        return True  # conservative: freeze on malformed index
 
-            return False
+                    # For early blocks, freeze everything.
+                    if layer_idx < cutoff:
+                        return True
+
+                    # For the last k blocks, only leave the attention output projections
+                    # (`attn_vec_einsum`) unfrozen; freeze everything else.
+                    if "attn_vec_einsum" in parts:
+                        return False
+                    return True
+
+            # LLM params outside of any block_* (e.g., embedder, final norms) are frozen.
+            return True
 
         return _freeze_early_layers

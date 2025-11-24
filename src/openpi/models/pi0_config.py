@@ -107,7 +107,11 @@ class Pi0Config(_model.BaseModelConfig):
                 action_expert_params_filter,
             )
 
-        # Pure top-k fine-tuning on the Gemma stack (no extra params).
+        # Pure top-k fine-tuning on the Gemma stack (no extra params). This is
+        # implemented as a *freeze* filter: within the selected experts
+        # (`topk_pali` / `topk_action_expert`), all transformer blocks are
+        # frozen except the attention output projections (`attn_vec_einsum`) in
+        # the last `topk_layers` blocks.
         if self.topk_layers is not None and self.topk_layers > 0:
             paligemma_cfg = _gemma.get_config(self.paligemma_variant)
             topk_cfg = _topk.TopKLayerFreezeConfig(
@@ -117,19 +121,6 @@ class Pi0Config(_model.BaseModelConfig):
                 include_action=self.topk_action_expert,
             )
             filters.append(topk_cfg.make_freeze_filter())
-
-            # Optionally freeze entire experts when excluded from top-k.
-            # If topk_action_expert is False, freeze all action-expert LLM params.
-            if not self.topk_action_expert:
-                filters.append(action_expert_params_filter)
-            # If topk_pali is False, freeze all PaliGemma LLM params (without the "_1" suffix).
-            if not self.topk_pali:
-                filters.append(
-                    nnx.All(
-                        gemma_params_filter,
-                        nnx.Not(action_expert_params_filter),
-                    )
-                )
 
         if not filters:
             return nnx.Nothing
