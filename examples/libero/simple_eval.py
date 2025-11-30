@@ -1,9 +1,9 @@
+import argparse
 import collections
 import json
 import logging
 import math
 import pathlib
-import pickle
 
 import imageio
 import numpy as np
@@ -40,14 +40,17 @@ def _get_libero_env(task, resolution, seed):
 
 
 def main():
+    parser = argparse.ArgumentParser(description="Evaluate policy on LIBERO tasks")
+    parser.add_argument("--eval", action="store_true", help="Evaluation mode: skip saving rollouts and just report success rates")
+    args = parser.parse_args()
+    
     logging.basicConfig(level=logging.INFO)
 
     host, port = "0.0.0.0", 8000
     task_suite_name = "libero_90"  # e.g., "libero_spatial", "libero_10", "libero_90"
-    # task_ids = [12, 14, 28, 29, 38]                 # small subset of tasks
-    # task_ids = list(range(39, 90))
-    task_ids = [1, 2, 3]
-    num_trials_per_task = 50
+    # task_ids = [5]                   # small subset of tasks
+    task_ids = list(range(35, 90))
+    num_trials_per_task = 20
     num_steps_wait = 10                 # wait for objects to settle
 
     # Max horizon per suite (copied from main.py)
@@ -71,97 +74,30 @@ def main():
 
     total_episodes, total_successes = 0, 0
     episode_summaries: list[dict] = []
+    task_results: dict[int, dict] = {}  # Track per-task results
 
     for task_id in task_ids:
         task = task_suite.get_task(task_id)
         init_states = task_suite.get_task_init_states(task_id)
-        num_init_states = len(init_states)
         env, task_description = _get_libero_env(task, LIBERO_ENV_RESOLUTION, seed=7)
 
         logging.info(f"=== Task {task_id}: {task_description} ===")
 
-        # Experiment name and base directories for this task
-        exp_name = f"{task_suite_name}_tasks1-90_trials{num_trials_per_task}"
-        obs_dir = pathlib.Path("data/finalrun1/libero_final_obs") / exp_name
-        traj_dir = pathlib.Path("data/finalrun1/libero_simple_trajectories") / exp_name
-        obs_dir.mkdir(parents=True, exist_ok=True)
-        traj_dir.mkdir(parents=True, exist_ok=True)
-
         task_episodes, task_successes = 0, 0
-        base_seed = 7
         for episode_idx in range(num_trials_per_task):
-            # -------- Resume logic: skip episodes that already have a saved trajectory --------
-            existing_suffix = None
-            existing_traj_path = None
-            for suffix_candidate in ("success", "failure"):
-                candidate = traj_dir / f"traj_task{task_id}_ep{episode_idx}_{suffix_candidate}.pkl"
-                if candidate.exists():
-                    existing_suffix = suffix_candidate
-                    existing_traj_path = candidate
-                    break
-
-            if existing_suffix is not None:
-                # Episode already completed in a previous run: load minimal info and skip rollout.
-                with existing_traj_path.open("rb") as f:
-                    episode_data = pickle.load(f)
-
-                obs_path = obs_dir / f"final_obs_task{task_id}_ep{episode_idx}_{existing_suffix}.pkl"
-
-                success_bool = existing_suffix == "success"
-                task_episodes += 1
-                total_episodes += 1
-                if success_bool:
-                    task_successes += 1
-                    total_successes += 1
-
-                episode_summaries.append(
-                    {
-                        "task_suite_name": task_suite_name,
-                        "task_id": int(task_id),
-                        "episode_idx": int(episode_idx),
-                        "success": bool(success_bool),
-                        "prompt": str(episode_data.get("prompt", task_description)),
-                        "final_obs_path": str(obs_path),
-                        "trajectory_path": str(existing_traj_path),
-                    }
-                )
-
-                logging.info(
-                    f"[resume] Skipping already completed task {task_id} episode {episode_idx}: "
-                    f"success={success_bool}, "
-                    f"task_success_rate={task_successes/task_episodes:.2f}, "
-                    f"total_success_rate={total_successes/total_episodes:.2f}"
-                )
-                continue
-
-            # -------- Fresh rollout for this episode --------
             # Reset environment at the start of each episode to clear any terminated state.
-            if episode_idx < num_init_states:
-                env.reset()
-                obs = env.set_init_state(init_states[episode_idx])
-            else:
-                # After exhausting the official LIBERO init states, sample new ones via env.reset()
-                env.seed(base_seed + episode_idx)
-                obs = env.reset()
-
+            env.reset()
+            obs = env.set_init_state(init_states[episode_idx])
             action_plan = collections.deque()
-            
-            # Trajectory data: store obs, state, action at each step
-            episode_data = {
-                "prompt": str(task_description),
-                "observations": [],
-                "states": [],
-                "actions": [],
-            }
+            replay_images = []
+            episode_actions: list[np.ndarray] = []
 
             t = 0
             done = False
-            final_obs = obs  # Track the last observation
             while t < max_steps + num_steps_wait:
                 # Wait for objects to fall for first few steps
                 if t < num_steps_wait:
                     obs, _, done, _ = env.step(LIBERO_DUMMY_ACTION)
-                    final_obs = obs  # Update final obs even during warmup
                     # If the environment terminates during the waiting phase (e.g., early failure),
                     # stop the episode to avoid stepping a terminated env.
                     if done:
@@ -179,21 +115,20 @@ def main():
                     image_tools.resize_with_pad(wrist_img, 224, 224)
                 )
 
-                # Construct state vector (what we send to the policy)
-                state = np.concatenate(
-                    (
-                        obs["robot0_eef_pos"],
-                        _quat2axisangle(obs["robot0_eef_quat"]),
-                        obs["robot0_gripper_qpos"],
-                    )
-                )
+                replay_images.append(img)
 
                 # Query policy when action chunk is exhausted
                 if not action_plan:
                     element = {
                         "observation/image": img,
                         "observation/wrist_image": wrist_img,
-                        "observation/state": state,
+                        "observation/state": np.concatenate(
+                            (
+                                obs["robot0_eef_pos"],
+                                _quat2axisangle(obs["robot0_eef_quat"]),
+                                obs["robot0_gripper_qpos"],
+                            )
+                        ),
                         "prompt": str(task_description),
                     }
                     action_chunk = client.infer(element)["actions"]
@@ -203,14 +138,8 @@ def main():
                     action_plan.extend(action_chunk[:replan_steps])
 
                 action = action_plan.popleft()
-                
-                # Store observation, state, action for this timestep
-                episode_data["observations"].append(obs)
-                episode_data["states"].append(state)
-                episode_data["actions"].append(np.asarray(action, dtype=np.float32))
-                
+                episode_actions.append(np.asarray(action, dtype=np.float32))
                 obs, reward, done, info = env.step(action.tolist())
-                final_obs = obs  # Update final observation after each step
                 if done:
                     task_successes += 1
                     total_successes += 1
@@ -221,51 +150,79 @@ def main():
             total_episodes += 1
 
             suffix = "success" if done else "failure"
-            # Save the final observation dict as pickle
-            obs_path = obs_dir / f"final_obs_task{task_id}_ep{episode_idx}_{suffix}.pkl"
-            with obs_path.open("wb") as f:
-                pickle.dump(final_obs, f)
+            
+            if not args.eval:
+                # exp_name = f"{task_suite_name}_tasks{'-'.join(map(str, task_ids))}_trials{num_trials_per_task}"
+                exp_name = f"{task_suite_name}_tasks1-90_trials{num_trials_per_task}"
+                # Save only the last frame instead of a full video to reduce storage.
+                frame_dir = pathlib.Path("data/try5/libero_simple_frames") / exp_name
+                frame_dir.mkdir(parents=True, exist_ok=True)
+                last_frame = replay_images[-1] if replay_images else img
+                frame_path = frame_dir / f"task{task_id}_ep{episode_idx}_{suffix}.png"
+                imageio.imwrite(frame_path, np.asarray(last_frame))
 
-            # Save trajectory (observations, states, actions, prompt) as pickle
-            traj_path = traj_dir / f"traj_task{task_id}_ep{episode_idx}_{suffix}.pkl"
-            with traj_path.open("wb") as f:
-                pickle.dump(episode_data, f)
+                # Save trajectory (actions only, for clustering / analysis)
+                traj_dir = pathlib.Path("data/try5/libero_simple_trajectories") / exp_name
+                traj_dir.mkdir(parents=True, exist_ok=True)
+                traj_path = traj_dir / f"traj_task{task_id}_ep{episode_idx}_{suffix}.npz"
+                np.savez(traj_path, actions=np.asarray(episode_actions, dtype=np.float32))
 
-            # Record summary for this episode
-            episode_summaries.append(
-                {
-                    "task_suite_name": task_suite_name,
-                    "task_id": int(task_id),
-                    "episode_idx": int(episode_idx),
-                    "success": bool(done),
-                    "prompt": str(task_description),
-                    "final_obs_path": str(obs_path),
-                    "trajectory_path": str(traj_path),
-                }
-            )
+                # Record summary for this episode
+                episode_summaries.append(
+                    {
+                        "task_suite_name": task_suite_name,
+                        "task_id": int(task_id),
+                        "episode_idx": int(episode_idx),
+                        "success": bool(done),
+                        "prompt": str(task_description),
+                        "video_path": str(frame_path),
+                        "trajectory_path": str(traj_path),
+                    }
+                )
 
             logging.info(
                 f"Task {task_id} episode {episode_idx}: success={done}, "
                 f"task_success_rate={task_successes/task_episodes:.2f}, "
                 f"total_success_rate={total_successes/total_episodes:.2f}"
             )
+        
+        # Store per-task results
+        task_results[task_id] = {
+            "task_description": task_description,
+            "successes": task_successes,
+            "episodes": task_episodes,
+            "success_rate": task_successes / task_episodes if task_episodes > 0 else 0.0,
+        }
 
     logging.info(f"Final total success rate: {total_successes/total_episodes:.2f} over {total_episodes} episodes.")
 
-    # Save a JSON summary for all episodes in this run.
-    summary = {
-        "task_suite_name": task_suite_name,
-        "task_ids": list(task_ids),
-        "num_trials_per_task": num_trials_per_task,
-        "total_episodes": total_episodes,
-        "total_successes": total_successes,
-        "episodes": episode_summaries,
-    }
-    summary_dir = pathlib.Path("data/libero_simple_trajectories")
-    summary_dir.mkdir(parents=True, exist_ok=True)
-    summary_path = summary_dir / f"{task_suite_name}_tasks{'-'.join(map(str, task_ids))}_trials{num_trials_per_task}_summary.json"
-    with summary_path.open("w") as f:
-        json.dump(summary, f, indent=2)
+    # Print task-wise summary
+    logging.info("\n" + "="*80)
+    logging.info("TASK-WISE SUCCESS RATES:")
+    logging.info("="*80)
+    for task_id in task_ids:
+        result = task_results[task_id]
+        logging.info(
+            f"Task {task_id:2d}: {result['successes']:2d}/{result['episodes']:2d} "
+            f"({result['success_rate']:.2%}) - {result['task_description']}"
+        )
+    logging.info("="*80)
+
+    if not args.eval:
+        # Save a JSON summary for all episodes in this run.
+        summary = {
+            "task_suite_name": task_suite_name,
+            "task_ids": list(task_ids),
+            "num_trials_per_task": num_trials_per_task,
+            "total_episodes": total_episodes,
+            "total_successes": total_successes,
+            "episodes": episode_summaries,
+        }
+        summary_dir = pathlib.Path("data/libero_simple_trajectories")
+        summary_dir.mkdir(parents=True, exist_ok=True)
+        summary_path = summary_dir / f"{task_suite_name}_tasks{'-'.join(map(str, task_ids))}_trials{num_trials_per_task}_summary.json"
+        with summary_path.open("w") as f:
+            json.dump(summary, f, indent=2)
 
 
 if __name__ == "__main__":
