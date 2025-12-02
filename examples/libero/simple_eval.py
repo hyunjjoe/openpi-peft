@@ -63,7 +63,7 @@ def main():
     args = parse_args()
     logging.basicConfig(level=logging.INFO)
 
-    host, port = "0.0.0.0", 8000
+    host, port = "0.0.0.0", 8002
     task_suite_name = "libero_90"  # e.g., "libero_spatial", "libero_10", "libero_90"
     # task_ids = [12, 14, 28, 29, 38]                 # small subset of tasks
     # task_ids = list(range(39, 90))
@@ -92,6 +92,7 @@ def main():
 
     total_episodes, total_successes = 0, 0
     episode_summaries: list[dict] = []
+    # Track per-task statistics
     per_task_stats: dict[int, dict[str, int]] = {}
 
     for task_id in task_ids:
@@ -277,11 +278,40 @@ def main():
                 f"total_success_rate={total_successes/total_episodes:.2f}"
             )
 
+        # Store per-task statistics
         per_task_stats[int(task_id)] = {
             "episodes": task_episodes,
             "successes": task_successes,
+            "description": task_description,
         }
 
+    # Print detailed per-task summary
+    logging.info("")
+    logging.info("=" * 80)
+    logging.info("PER-TASK SUCCESS SUMMARY")
+    logging.info("=" * 80)
+    logging.info(f"{'Task ID':<10} {'Successes':<12} {'Total':<10} {'Success Rate':<15} {'Task Description'}")
+    logging.info("-" * 80)
+    
+    for task_id in sorted(task_ids):
+        stats = per_task_stats.get(int(task_id), {"episodes": 0, "successes": 0, "description": ""})
+        successes = stats["successes"]
+        total = stats["episodes"]
+        success_rate = (successes / total * 100) if total > 0 else 0.0
+        task_description = stats.get("description", "")[:50]  # Truncate long descriptions
+        
+        logging.info(
+            f"{task_id:<10} {successes:<12} {total:<10} {success_rate:>6.2f}%     {task_description}"
+        )
+    
+    logging.info("-" * 80)
+    overall_rate = (total_successes / total_episodes * 100) if total_episodes > 0 else 0.0
+    logging.info(
+        f"{'TOTAL':<10} {total_successes:<12} {total_episodes:<10} {overall_rate:>6.2f}%"
+    )
+    logging.info("=" * 80)
+    logging.info("")
+    
     logging.info(f"Final total success rate: {total_successes/total_episodes:.2f} over {total_episodes} episodes.")
     
     task_success_rates = []
@@ -310,11 +340,11 @@ def main():
     }
     summary_base_dir = pathlib.Path("data/libero_simple_trajectories")
     default_summary_path = summary_base_dir / f"{task_suite_name}_tasks{'-'.join(map(str, task_ids))}_trials{num_trials_per_task}_summary.json"
-    if args.task_success_summary_path is None:
+    if args.task_summary_dest is None:
         summary_base_dir.mkdir(parents=True, exist_ok=True)
         summary_path = default_summary_path
     else:
-        summary_path = args.task_success_summary_path
+        summary_path = args.task_summary_dest
         summary_path.parent.mkdir(parents=True, exist_ok=True)
     with summary_path.open("w") as f:
         json.dump(summary, f, indent=2)
