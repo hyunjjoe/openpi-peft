@@ -10,6 +10,7 @@ from typing_extensions import override
 from openpi.models import model as _model
 from openpi.models import pi0_config
 import openpi.models.gemma as _gemma
+import openpi.models.gemma_topk as _gemma_topk
 import openpi.models.siglip as _siglip
 from openpi.shared import array_typing as at
 
@@ -70,13 +71,22 @@ class Pi0(_model.BaseModel):
         paligemma_config = _gemma.get_config(config.paligemma_variant)
         action_expert_config = _gemma.get_config(config.action_expert_variant)
         # TODO: rewrite gemma in NNX. For now, use bridge.
-        llm = nnx_bridge.ToNNX(
-            _gemma.Module(
+        # For top-k layer finetuning, we use a variant of Gemma that exposes each layer
+        # as its own submodule (`block_0`, `block_1`, ...). For all other cases, we use
+        # the standard Gemma module.
+        if getattr(config, "topk_layers", None):
+            llm_module = _gemma_topk.TopKModule(
                 configs=[paligemma_config, action_expert_config],
                 embed_dtype=config.dtype,
                 adarms=config.pi05,
             )
-        )
+        else:
+            llm_module = _gemma.Module(
+                configs=[paligemma_config, action_expert_config],
+                embed_dtype=config.dtype,
+                adarms=config.pi05,
+            )
+        llm = nnx_bridge.ToNNX(llm_module)
         llm.lazy_init(rngs=rngs, method="init", use_adarms=[False, True] if config.pi05 else [False, False])
         img = nnx_bridge.ToNNX(
             _siglip.Module(

@@ -8,6 +8,7 @@ from typing_extensions import override
 
 from openpi.models import model as _model
 import openpi.models.gemma as _gemma
+import openpi.models.topk as _topk
 from openpi.shared import array_typing as at
 import openpi.shared.nnx_utils as nnx_utils
 
@@ -20,6 +21,15 @@ class Pi0Config(_model.BaseModelConfig):
     dtype: str = "bfloat16"
     paligemma_variant: _gemma.Variant = "gemma_2b"
     action_expert_variant: _gemma.Variant = "gemma_300m"
+
+    # If set, enables top-k layer fine-tuning on the bridged Gemma stack by
+    # freezing all but the top `topk_layers` transformer blocks. This is a pure
+    # freeze scheme: no additional parameters are introduced.
+    topk_layers: int | None = None
+    # Controls which experts top-k freezing should apply to. By default, both
+    # PaliGemma (paligemma_variant) and the action expert are included.
+    topk_pali: bool = True
+    topk_action_expert: bool = True
 
     # Set the model specific defaults.
     action_dim: int = 32
@@ -96,8 +106,25 @@ class Pi0Config(_model.BaseModelConfig):
             filters.append(
                 action_expert_params_filter,
             )
+
+        # Pure top-k fine-tuning on the Gemma stack (no extra params). This is
+        # implemented as a *freeze* filter: within the selected experts
+        # (`topk_pali` / `topk_action_expert`), all transformer blocks are
+        # frozen except the attention output projections (`attn_vec_einsum`) in
+        # the last `topk_layers` blocks.
+        if self.topk_layers is not None and self.topk_layers > 0:
+            paligemma_cfg = _gemma.get_config(self.paligemma_variant)
+            topk_cfg = _topk.TopKLayerFreezeConfig(
+                total_layers=paligemma_cfg.depth,
+                k_unfrozen=self.topk_layers,
+                include_pali=self.topk_pali,
+                include_action=self.topk_action_expert,
+            )
+            filters.append(topk_cfg.make_freeze_filter())
+
         if not filters:
             return nnx.Nothing
+
         if "lora" in self.paligemma_variant or "lora" in self.action_expert_variant:
             filters.append(
                 nnx.Not(nnx_utils.PathRegex(".*lora.*")),

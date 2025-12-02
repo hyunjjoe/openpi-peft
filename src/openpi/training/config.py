@@ -667,6 +667,34 @@ _CONFIGS = [
         num_train_steps=30_000,
     ),
     TrainConfig(
+        # Example of pure top-k fine-tuning: only the top `k` Gemma layers are trainable.
+        name="pi0_libero_topk4",
+        model=pi0_config.Pi0Config(
+            # Be explicit about backbone variants to match the base checkpoint.
+            paligemma_variant="gemma_2b",
+            action_expert_variant="gemma_300m",
+            topk_layers=4,
+        ),
+        data=LeRobotLiberoDataConfig(
+            # Reuse the same Libero fine-tuning dataset as the adapters config.
+            repo_id="hyunjjoe/libero_ft_demos",
+            base_config=DataConfig(prompt_from_task=True),
+            extra_delta_transform=False,
+            # Reuse the norm stats that were already computed for `pi05_libero_adapters`.
+            assets=AssetsConfig(
+                assets_dir="assets/pi05_libero_adapters",
+                asset_id="hyunjjoe/libero_ft_demos",
+            ),
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi0_base/params"),
+        num_train_steps=30_000,
+        freeze_filter=pi0_config.Pi0Config(
+            paligemma_variant="gemma_2b",
+            action_expert_variant="gemma_300m",
+            topk_layers=4,
+        ).get_freeze_filter(),
+    ),
+    TrainConfig(
         name="pi0_libero_low_mem_finetune",
         # Here is an example of loading a pi0 model for LoRA fine-tuning.
         model=pi0_config.Pi0Config(paligemma_variant="gemma_2b_lora", action_expert_variant="gemma_300m_lora"),
@@ -765,6 +793,10 @@ _CONFIGS = [
             repo_id="hyunjjoe/libero_ft_demos",
             base_config=DataConfig(prompt_from_task=True),
             extra_delta_transform=False,
+            assets=AssetsConfig(
+                assets_dir="assets/pi05_libero_adapters",
+                asset_id="hyunjjoe/libero_ft_demos",
+            ),
         ),
         batch_size=4,
         lr_schedule=_optimizer.CosineDecaySchedule(
@@ -782,6 +814,398 @@ _CONFIGS = [
             discrete_state_input=False,
             paligemma_variant="gemma_2b_lora",
             action_expert_variant="gemma_300m_lora",
+        ).get_freeze_filter(),
+        ema_decay=None,
+    ),
+    TrainConfig(
+        name="pi05_libero_topk1",
+        # Pure top-k fine-tuning of pi05: no adapters/LoRA, just freeze all but the
+        # top 4 transformer blocks in the Gemma stack.
+        model=pi0_config.Pi0Config(
+            pi05=True,
+            action_horizon=10,
+            discrete_state_input=False,
+            paligemma_variant="gemma_2b",
+            action_expert_variant="gemma_300m",
+            topk_layers=1,
+            topk_pali=True,
+            topk_action_expert=False,
+        ),
+        data=LeRobotLiberoDataConfig(
+            repo_id="hyunjjoe/libero_ft_demos",
+            base_config=DataConfig(prompt_from_task=True),
+            extra_delta_transform=False,
+            # Reuse the Libero norm stats computed for pi05_libero_adapters.
+            assets=AssetsConfig(
+                assets_dir="assets/pi05_libero_adapters",
+                asset_id="hyunjjoe/libero_ft_demos",
+            ),
+        ),
+        batch_size=16,
+        lr_schedule=_optimizer.CosineDecaySchedule(
+            warmup_steps=10_000,
+            peak_lr=5e-5,
+            decay_steps=1_000_000,
+            decay_lr=5e-5,
+        ),
+        optimizer=_optimizer.AdamW(clip_gradient_norm=1.0),
+        weight_loader=weight_loaders.TopKGemmaCheckpointWeightLoader(
+            "gs://openpi-assets/checkpoints/pi05_libero/params",
+            total_layers=18,
+        ),
+        num_train_steps=30_000,
+        freeze_filter=pi0_config.Pi0Config(
+            pi05=True,
+            action_horizon=10,
+            discrete_state_input=False,
+            paligemma_variant="gemma_2b",
+            action_expert_variant="gemma_300m",
+            topk_layers=1,
+            topk_pali=True,
+            topk_action_expert=False,
+        ).get_freeze_filter(),
+        ema_decay=None,
+    ),
+    TrainConfig(
+        name="pi05_libero_topk2",
+        # Pure top-k fine-tuning of pi05: no adapters/LoRA, just freeze all but the
+        # top 4 transformer blocks in the Gemma stack.
+        model=pi0_config.Pi0Config(
+            pi05=True,
+            action_horizon=10,
+            discrete_state_input=False,
+            paligemma_variant="gemma_2b",
+            action_expert_variant="gemma_300m",
+            topk_layers=2,
+            topk_pali=True,
+            topk_action_expert=False,
+        ),
+        data=LeRobotLiberoDataConfig(
+            repo_id="hyunjjoe/libero_ft_demos",
+            base_config=DataConfig(prompt_from_task=True),
+            extra_delta_transform=False,
+            # Reuse the Libero norm stats computed for pi05_libero_adapters.
+            assets=AssetsConfig(
+                assets_dir="assets/pi05_libero_adapters",
+                asset_id="hyunjjoe/libero_ft_demos",
+            ),
+        ),
+        batch_size=16,
+        lr_schedule=_optimizer.CosineDecaySchedule(
+            warmup_steps=10_000,
+            peak_lr=5e-5,
+            decay_steps=1_000_000,
+            decay_lr=5e-5,
+        ),
+        optimizer=_optimizer.AdamW(clip_gradient_norm=1.0),
+        weight_loader=weight_loaders.TopKGemmaCheckpointWeightLoader(
+            "gs://openpi-assets/checkpoints/pi05_libero/params",
+            total_layers=18,
+        ),
+        num_train_steps=30_000,
+        freeze_filter=pi0_config.Pi0Config(
+            pi05=True,
+            action_horizon=10,
+            discrete_state_input=False,
+            paligemma_variant="gemma_2b",
+            action_expert_variant="gemma_300m",
+            topk_layers=2,
+            topk_pali=True,
+            topk_action_expert=False,
+        ).get_freeze_filter(),
+        ema_decay=None,
+    ),
+    TrainConfig(
+        name="pi05_libero_topk3",
+        # Pure top-k fine-tuning of pi05: no adapters/LoRA, just freeze all but the
+        # top 4 transformer blocks in the Gemma stack.
+        model=pi0_config.Pi0Config(
+            pi05=True,
+            action_horizon=10,
+            discrete_state_input=False,
+            paligemma_variant="gemma_2b",
+            action_expert_variant="gemma_300m",
+            topk_layers=3,
+            topk_pali=True,
+            topk_action_expert=False,
+        ),
+        data=LeRobotLiberoDataConfig(
+            repo_id="hyunjjoe/libero_ft_demos",
+            base_config=DataConfig(prompt_from_task=True),
+            extra_delta_transform=False,
+            # Reuse the Libero norm stats computed for pi05_libero_adapters.
+            assets=AssetsConfig(
+                assets_dir="assets/pi05_libero_adapters",
+                asset_id="hyunjjoe/libero_ft_demos",
+            ),
+        ),
+        batch_size=16,
+        lr_schedule=_optimizer.CosineDecaySchedule(
+            warmup_steps=10_000,
+            peak_lr=5e-5,
+            decay_steps=1_000_000,
+            decay_lr=5e-5,
+        ),
+        optimizer=_optimizer.AdamW(clip_gradient_norm=1.0),
+        weight_loader=weight_loaders.TopKGemmaCheckpointWeightLoader(
+            "gs://openpi-assets/checkpoints/pi05_libero/params",
+            total_layers=18,
+        ),
+        num_train_steps=30_000,
+        freeze_filter=pi0_config.Pi0Config(
+            pi05=True,
+            action_horizon=10,
+            discrete_state_input=False,
+            paligemma_variant="gemma_2b",
+            action_expert_variant="gemma_300m",
+            topk_layers=3,
+            topk_pali=True,
+            topk_action_expert=False,
+        ).get_freeze_filter(),
+        ema_decay=None,
+    ),
+    TrainConfig(
+        name="pi05_libero_topk4",
+        # Pure top-k fine-tuning of pi05: no adapters/LoRA, just freeze all but the
+        # top 4 transformer blocks in the Gemma stack.
+        model=pi0_config.Pi0Config(
+            pi05=True,
+            action_horizon=10,
+            discrete_state_input=False,
+            paligemma_variant="gemma_2b",
+            action_expert_variant="gemma_300m",
+            topk_layers=4,
+            topk_pali=True,
+            topk_action_expert=False,
+        ),
+        data=LeRobotLiberoDataConfig(
+            repo_id="hyunjjoe/libero_ft_demos",
+            base_config=DataConfig(prompt_from_task=True),
+            extra_delta_transform=False,
+            # Reuse the Libero norm stats computed for pi05_libero_adapters.
+            assets=AssetsConfig(
+                assets_dir="assets/pi05_libero_adapters",
+                asset_id="hyunjjoe/libero_ft_demos",
+            ),
+        ),
+        batch_size=16,
+        lr_schedule=_optimizer.CosineDecaySchedule(
+            warmup_steps=10_000,
+            peak_lr=5e-5,
+            decay_steps=1_000_000,
+            decay_lr=5e-5,
+        ),
+        optimizer=_optimizer.AdamW(clip_gradient_norm=1.0),
+        weight_loader=weight_loaders.TopKGemmaCheckpointWeightLoader(
+            "gs://openpi-assets/checkpoints/pi05_libero/params",
+            total_layers=18,
+        ),
+        num_train_steps=30_000,
+        freeze_filter=pi0_config.Pi0Config(
+            pi05=True,
+            action_horizon=10,
+            discrete_state_input=False,
+            paligemma_variant="gemma_2b",
+            action_expert_variant="gemma_300m",
+            topk_layers=4,
+            topk_pali=True,
+            topk_action_expert=False,
+        ).get_freeze_filter(),
+        ema_decay=None,
+    ),
+    TrainConfig(
+        name="pi05_libero_topk1_paliaction",
+        # Pure top-k fine-tuning of pi05: no adapters/LoRA, just freeze all but the
+        # top 4 transformer blocks in the Gemma stack.
+        model=pi0_config.Pi0Config(
+            pi05=True,
+            action_horizon=10,
+            discrete_state_input=False,
+            paligemma_variant="gemma_2b",
+            action_expert_variant="gemma_300m",
+            topk_layers=1,
+            topk_pali=True,
+            topk_action_expert=False,
+        ),
+        data=LeRobotLiberoDataConfig(
+            repo_id="hyunjjoe/libero_ft_demos",
+            base_config=DataConfig(prompt_from_task=True),
+            extra_delta_transform=False,
+            # Reuse the Libero norm stats computed for pi05_libero_adapters.
+            assets=AssetsConfig(
+                assets_dir="assets/pi05_libero_adapters",
+                asset_id="hyunjjoe/libero_ft_demos",
+            ),
+        ),
+        batch_size=16,
+        lr_schedule=_optimizer.CosineDecaySchedule(
+            warmup_steps=10_000,
+            peak_lr=5e-5,
+            decay_steps=1_000_000,
+            decay_lr=5e-5,
+        ),
+        optimizer=_optimizer.AdamW(clip_gradient_norm=1.0),
+        weight_loader=weight_loaders.TopKGemmaCheckpointWeightLoader(
+            "gs://openpi-assets/checkpoints/pi05_libero/params",
+            total_layers=18,
+        ),
+        num_train_steps=30_000,
+        freeze_filter=pi0_config.Pi0Config(
+            pi05=True,
+            action_horizon=10,
+            discrete_state_input=False,
+            paligemma_variant="gemma_2b",
+            action_expert_variant="gemma_300m",
+            topk_layers=1,
+            topk_pali=True,
+            topk_action_expert=True,
+        ).get_freeze_filter(),
+        ema_decay=None,
+    ),
+    TrainConfig(
+        name="pi05_libero_topk2_paliaction",
+        # Pure top-k fine-tuning of pi05: no adapters/LoRA, just freeze all but the
+        # top 4 transformer blocks in the Gemma stack.
+        model=pi0_config.Pi0Config(
+            pi05=True,
+            action_horizon=10,
+            discrete_state_input=False,
+            paligemma_variant="gemma_2b",
+            action_expert_variant="gemma_300m",
+            topk_layers=2,
+            topk_pali=True,
+            topk_action_expert=False,
+        ),
+        data=LeRobotLiberoDataConfig(
+            repo_id="hyunjjoe/libero_ft_demos",
+            base_config=DataConfig(prompt_from_task=True),
+            extra_delta_transform=False,
+            # Reuse the Libero norm stats computed for pi05_libero_adapters.
+            assets=AssetsConfig(
+                assets_dir="assets/pi05_libero_adapters",
+                asset_id="hyunjjoe/libero_ft_demos",
+            ),
+        ),
+        batch_size=16,
+        lr_schedule=_optimizer.CosineDecaySchedule(
+            warmup_steps=10_000,
+            peak_lr=5e-5,
+            decay_steps=1_000_000,
+            decay_lr=5e-5,
+        ),
+        optimizer=_optimizer.AdamW(clip_gradient_norm=1.0),
+        weight_loader=weight_loaders.TopKGemmaCheckpointWeightLoader(
+            "gs://openpi-assets/checkpoints/pi05_libero/params",
+            total_layers=18,
+        ),
+        num_train_steps=30_000,
+        freeze_filter=pi0_config.Pi0Config(
+            pi05=True,
+            action_horizon=10,
+            discrete_state_input=False,
+            paligemma_variant="gemma_2b",
+            action_expert_variant="gemma_300m",
+            topk_layers=2,
+            topk_pali=True,
+            topk_action_expert=True,
+        ).get_freeze_filter(),
+        ema_decay=None,
+    ),
+    TrainConfig(
+        name="pi05_libero_topk3_paliaction",
+        # Pure top-k fine-tuning of pi05: no adapters/LoRA, just freeze all but the
+        # top 4 transformer blocks in the Gemma stack.
+        model=pi0_config.Pi0Config(
+            pi05=True,
+            action_horizon=10,
+            discrete_state_input=False,
+            paligemma_variant="gemma_2b",
+            action_expert_variant="gemma_300m",
+            topk_layers=3,
+            topk_pali=True,
+            topk_action_expert=False,
+        ),
+        data=LeRobotLiberoDataConfig(
+            repo_id="hyunjjoe/libero_ft_demos",
+            base_config=DataConfig(prompt_from_task=True),
+            extra_delta_transform=False,
+            # Reuse the Libero norm stats computed for pi05_libero_adapters.
+            assets=AssetsConfig(
+                assets_dir="assets/pi05_libero_adapters",
+                asset_id="hyunjjoe/libero_ft_demos",
+            ),
+        ),
+        batch_size=16,
+        lr_schedule=_optimizer.CosineDecaySchedule(
+            warmup_steps=10_000,
+            peak_lr=5e-5,
+            decay_steps=1_000_000,
+            decay_lr=5e-5,
+        ),
+        optimizer=_optimizer.AdamW(clip_gradient_norm=1.0),
+        weight_loader=weight_loaders.TopKGemmaCheckpointWeightLoader(
+            "gs://openpi-assets/checkpoints/pi05_libero/params",
+            total_layers=18,
+        ),
+        num_train_steps=30_000,
+        freeze_filter=pi0_config.Pi0Config(
+            pi05=True,
+            action_horizon=10,
+            discrete_state_input=False,
+            paligemma_variant="gemma_2b",
+            action_expert_variant="gemma_300m",
+            topk_layers=3,
+            topk_pali=True,
+            topk_action_expert=True,
+        ).get_freeze_filter(),
+        ema_decay=None,
+    ),
+    TrainConfig(
+        name="pi05_libero_topk4_paliaction",
+        # Pure top-k fine-tuning of pi05: no adapters/LoRA, just freeze all but the
+        # top 4 transformer blocks in the Gemma stack.
+        model=pi0_config.Pi0Config(
+            pi05=True,
+            action_horizon=10,
+            discrete_state_input=False,
+            paligemma_variant="gemma_2b",
+            action_expert_variant="gemma_300m",
+            topk_layers=4,
+            topk_pali=True,
+            topk_action_expert=False,
+        ),
+        data=LeRobotLiberoDataConfig(
+            repo_id="hyunjjoe/libero_ft_demos",
+            base_config=DataConfig(prompt_from_task=True),
+            extra_delta_transform=False,
+            # Reuse the Libero norm stats computed for pi05_libero_adapters.
+            assets=AssetsConfig(
+                assets_dir="assets/pi05_libero_adapters",
+                asset_id="hyunjjoe/libero_ft_demos",
+            ),
+        ),
+        batch_size=16,
+        lr_schedule=_optimizer.CosineDecaySchedule(
+            warmup_steps=10_000,
+            peak_lr=5e-5,
+            decay_steps=1_000_000,
+            decay_lr=5e-5,
+        ),
+        optimizer=_optimizer.AdamW(clip_gradient_norm=1.0),
+        weight_loader=weight_loaders.TopKGemmaCheckpointWeightLoader(
+            "gs://openpi-assets/checkpoints/pi05_libero/params",
+            total_layers=18,
+        ),
+        num_train_steps=30_000,
+        freeze_filter=pi0_config.Pi0Config(
+            pi05=True,
+            action_horizon=10,
+            discrete_state_input=False,
+            paligemma_variant="gemma_2b",
+            action_expert_variant="gemma_300m",
+            topk_layers=4,
+            topk_pali=True,
+            topk_action_expert=True,
         ).get_freeze_filter(),
         ema_decay=None,
     ),

@@ -14,6 +14,7 @@ import openpi.models.gemma_fast as _gemma
 import openpi.models.siglip as _siglip
 from openpi.shared import array_typing as at
 import openpi.shared.nnx_utils as nnx_utils
+import openpi.models.topk as _topk
 
 logger = logging.getLogger("openpi")
 
@@ -88,6 +89,9 @@ class Pi0FASTConfig(_model.BaseModelConfig):
     # Keyword arguments for the fast model tokenizer.
     fast_model_tokenizer_kwargs: dict[str, Any] | None = None
 
+    # If set, enables top-k layer fine-tuning on the Gemma FAST stack.
+    topk_layers: int | None = None
+
     @property
     @override
     def model_type(self) -> _model.ModelType:
@@ -126,13 +130,28 @@ class Pi0FASTConfig(_model.BaseModelConfig):
 
     def get_freeze_filter(self) -> nnx.filterlib.Filter:
         """Returns the freeze filter based on the model config."""
-        if not any(token in self.paligemma_variant for token in ("lora", "adapter")):
+        filters: list[nnx.filterlib.Filter] = []
+
+        # LoRA / adapter-style PEFT on the Gemma FAST stack.
+        if any(token in self.paligemma_variant for token in ("lora", "adapter")):
+            filters.append(nnx_utils.PathRegex(".*llm.*"))
+            if "lora" in self.paligemma_variant:
+                filters.append(nnx.Not(nnx_utils.PathRegex(".*lora.*")))
+            if "adapter" in self.paligemma_variant:
+                filters.append(nnx.Not(nnx_utils.PathRegex(".*adapter.*")))
+
+        # Pure top-k fine-tuning (no extra params): keep only the top-k layers trainable.
+        if self.topk_layers is not None and self.topk_layers > 0:
+            paligemma_cfg = _gemma.get_config(self.paligemma_variant)
+            topk_cfg = _topk.TopKLayerFreezeConfig(
+                total_layers=paligemma_cfg.depth,
+                k_unfrozen=self.topk_layers,
+            )
+            filters.append(topk_cfg.make_freeze_filter())
+
+        if not filters:
             return nnx.Nothing
-        filters = [nnx_utils.PathRegex(".*llm.*")]
-        if "lora" in self.paligemma_variant:
-            filters.append(nnx.Not(nnx_utils.PathRegex(".*lora.*")))
-        if "adapter" in self.paligemma_variant:
-            filters.append(nnx.Not(nnx_utils.PathRegex(".*adapter.*")))
+
         return nnx.All(*filters)
 
 

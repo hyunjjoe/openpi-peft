@@ -1,0 +1,200 @@
+import collections
+import json
+import logging
+import math
+import pathlib
+
+import imageio
+import numpy as np
+from libero.libero import benchmark, get_libero_path
+from libero.libero.envs import OffScreenRenderEnv
+from openpi_client import image_tools
+from openpi_client import websocket_client_policy as _websocket_client_policy
+
+LIBERO_DUMMY_ACTION = [0.0] * 6 + [-1.0]
+LIBERO_ENV_RESOLUTION = 256  # same as training
+
+
+def _quat2axisangle(quat):
+    # Copied from robosuite
+    quat = quat.copy()
+    if quat[3] > 1.0:
+        quat[3] = 1.0
+    elif quat[3] < -1.0:
+        quat[3] = -1.0
+
+    den = math.sqrt(1.0 - quat[3] * quat[3])
+    if math.isclose(den, 0.0):
+        return np.zeros(3)
+    return (quat[:3] * 2.0 * math.acos(quat[3])) / den
+
+
+def _get_libero_env(task, resolution, seed):
+    task_description = task.language
+    task_bddl_file = pathlib.Path(get_libero_path("bddl_files")) / task.problem_folder / task.bddl_file
+    env_args = {"bddl_file_name": task_bddl_file, "camera_heights": resolution, "camera_widths": resolution}
+    env = OffScreenRenderEnv(**env_args)
+    env.seed(seed)
+    return env, task_description
+
+
+def main():
+    logging.basicConfig(level=logging.INFO)
+
+    host, port = "0.0.0.0", 8000
+    task_suite_name = "libero_90"  # e.g., "libero_spatial", "libero_10", "libero_90"
+    # task_ids = [5]                   # small subset of tasks
+    task_ids = list(range(49, 90))
+    num_trials_per_task = 20
+    num_steps_wait = 10                 # wait for objects to settle
+
+    # Max horizon per suite (copied from main.py)
+    if task_suite_name == "libero_spatial":
+        max_steps = 220
+    elif task_suite_name == "libero_object":
+        max_steps = 280
+    elif task_suite_name == "libero_goal":
+        max_steps = 300
+    elif task_suite_name == "libero_10":
+        max_steps = 520
+    elif task_suite_name == "libero_90":
+        max_steps = 400
+    else:
+        raise ValueError(f"Unknown task suite: {task_suite_name}")
+
+    client = _websocket_client_policy.WebsocketClientPolicy(host, port)
+
+    bench_dict = benchmark.get_benchmark_dict()
+    task_suite = bench_dict[task_suite_name]()
+
+    total_episodes, total_successes = 0, 0
+    episode_summaries: list[dict] = []
+
+    for task_id in task_ids:
+        task = task_suite.get_task(task_id)
+        init_states = task_suite.get_task_init_states(task_id)
+        env, task_description = _get_libero_env(task, LIBERO_ENV_RESOLUTION, seed=7)
+
+        logging.info(f"=== Task {task_id}: {task_description} ===")
+
+        task_episodes, task_successes = 0, 0
+        for episode_idx in range(num_trials_per_task):
+            # Reset environment at the start of each episode to clear any terminated state.
+            env.reset()
+            obs = env.set_init_state(init_states[episode_idx])
+            action_plan = collections.deque()
+            replay_images = []
+            episode_actions: list[np.ndarray] = []
+
+            t = 0
+            done = False
+            while t < max_steps + num_steps_wait:
+                # Wait for objects to fall for first few steps
+                if t < num_steps_wait:
+                    obs, _, done, _ = env.step(LIBERO_DUMMY_ACTION)
+                    # If the environment terminates during the waiting phase (e.g., early failure),
+                    # stop the episode to avoid stepping a terminated env.
+                    if done:
+                        break
+                    t += 1
+                    continue
+
+                # Preprocess images (rotate 180 deg + resize + pad)
+                img = np.ascontiguousarray(obs["agentview_image"][::-1, ::-1])
+                wrist_img = np.ascontiguousarray(obs["robot0_eye_in_hand_image"][::-1, ::-1])
+                img = image_tools.convert_to_uint8(
+                    image_tools.resize_with_pad(img, 224, 224)
+                )
+                wrist_img = image_tools.convert_to_uint8(
+                    image_tools.resize_with_pad(wrist_img, 224, 224)
+                )
+
+                replay_images.append(img)
+
+                # Query policy when action chunk is exhausted
+                if not action_plan:
+                    element = {
+                        "observation/image": img,
+                        "observation/wrist_image": wrist_img,
+                        "observation/state": np.concatenate(
+                            (
+                                obs["robot0_eef_pos"],
+                                _quat2axisangle(obs["robot0_eef_quat"]),
+                                obs["robot0_gripper_qpos"],
+                            )
+                        ),
+                        "prompt": str(task_description),
+                    }
+                    action_chunk = client.infer(element)["actions"]
+                    # Replan every 5 steps
+                    replan_steps = 5
+                    assert len(action_chunk) >= replan_steps
+                    action_plan.extend(action_chunk[:replan_steps])
+
+                action = action_plan.popleft()
+                episode_actions.append(np.asarray(action, dtype=np.float32))
+                obs, reward, done, info = env.step(action.tolist())
+                if done:
+                    task_successes += 1
+                    total_successes += 1
+                    break
+                t += 1
+
+            task_episodes += 1
+            total_episodes += 1
+
+            suffix = "success" if done else "failure"
+            # exp_name = f"{task_suite_name}_tasks{'-'.join(map(str, task_ids))}_trials{num_trials_per_task}"
+            exp_name = f"{task_suite_name}_tasks1-90_trials{num_trials_per_task}"
+            # Save only the last frame instead of a full video to reduce storage.
+            frame_dir = pathlib.Path("data/try5/libero_simple_frames") / exp_name
+            frame_dir.mkdir(parents=True, exist_ok=True)
+            last_frame = replay_images[-1] if replay_images else img
+            frame_path = frame_dir / f"task{task_id}_ep{episode_idx}_{suffix}.png"
+            imageio.imwrite(frame_path, np.asarray(last_frame))
+
+            # Save trajectory (actions only, for clustering / analysis)
+            traj_dir = pathlib.Path("data/try5/libero_simple_trajectories") / exp_name
+            traj_dir.mkdir(parents=True, exist_ok=True)
+            traj_path = traj_dir / f"traj_task{task_id}_ep{episode_idx}_{suffix}.npz"
+            np.savez(traj_path, actions=np.asarray(episode_actions, dtype=np.float32))
+
+            # Record summary for this episode
+            episode_summaries.append(
+                {
+                    "task_suite_name": task_suite_name,
+                    "task_id": int(task_id),
+                    "episode_idx": int(episode_idx),
+                    "success": bool(done),
+                    "prompt": str(task_description),
+                    "video_path": str(frame_path),
+                    "trajectory_path": str(traj_path),
+                }
+            )
+
+            logging.info(
+                f"Task {task_id} episode {episode_idx}: success={done}, "
+                f"task_success_rate={task_successes/task_episodes:.2f}, "
+                f"total_success_rate={total_successes/total_episodes:.2f}"
+            )
+
+    logging.info(f"Final total success rate: {total_successes/total_episodes:.2f} over {total_episodes} episodes.")
+
+    # Save a JSON summary for all episodes in this run.
+    summary = {
+        "task_suite_name": task_suite_name,
+        "task_ids": list(task_ids),
+        "num_trials_per_task": num_trials_per_task,
+        "total_episodes": total_episodes,
+        "total_successes": total_successes,
+        "episodes": episode_summaries,
+    }
+    summary_dir = pathlib.Path("data/libero_simple_trajectories")
+    summary_dir.mkdir(parents=True, exist_ok=True)
+    summary_path = summary_dir / f"{task_suite_name}_tasks{'-'.join(map(str, task_ids))}_trials{num_trials_per_task}_summary.json"
+    with summary_path.open("w") as f:
+        json.dump(summary, f, indent=2)
+
+
+if __name__ == "__main__":
+    main()
