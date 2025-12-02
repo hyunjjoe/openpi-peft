@@ -793,10 +793,6 @@ _CONFIGS = [
             repo_id="hyunjjoe/libero_ft_demos",
             base_config=DataConfig(prompt_from_task=True),
             extra_delta_transform=False,
-            assets=AssetsConfig(
-                assets_dir="assets/pi05_libero_adapters",
-                asset_id="hyunjjoe/libero_ft_demos",
-            ),
         ),
         batch_size=4,
         lr_schedule=_optimizer.CosineDecaySchedule(
