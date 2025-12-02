@@ -1,3 +1,4 @@
+import argparse
 import collections
 import json
 import logging
@@ -15,6 +16,25 @@ from openpi_client import websocket_client_policy as _websocket_client_policy
 LIBERO_DUMMY_ACTION = [0.0] * 6 + [-1.0]
 LIBERO_ENV_RESOLUTION = 256  # same as training
 
+def parse_args():
+    parser = argparse.ArgumentParser(
+        description="Run the simple OpenPI evaluation loop for a selection of LIBERO tasks."
+    )
+    parser.add_argument(
+        "--eval",
+        dest="eval_only",
+        action="store_true",
+        help="Run the evaluation loop without saving per-episode obs/trajectory pickles.",
+    )
+    parser.add_argument(
+        "--task-summary-dest",
+        type=pathlib.Path,
+        default=None,
+        help=(
+            "If provided, write the task success rate summary to this JSON path. "
+        ),
+    )
+    return parser.parse_args()
 
 def _quat2axisangle(quat):
     # Copied from robosuite
@@ -40,6 +60,7 @@ def _get_libero_env(task, resolution, seed):
 
 
 def main():
+    args = parse_args()
     logging.basicConfig(level=logging.INFO)
 
     host, port = "0.0.0.0", 8000
@@ -71,6 +92,7 @@ def main():
 
     total_episodes, total_successes = 0, 0
     episode_summaries: list[dict] = []
+    per_task_stats: dict[int, dict[str, int]] = {}
 
     for task_id in task_ids:
         task = task_suite.get_task(task_id)
@@ -82,10 +104,11 @@ def main():
 
         # Experiment name and base directories for this task
         exp_name = f"{task_suite_name}_tasks1-90_trials{num_trials_per_task}"
-        obs_dir = pathlib.Path("data/finalrun1/libero_final_obs") / exp_name
-        traj_dir = pathlib.Path("data/finalrun1/libero_simple_trajectories") / exp_name
-        obs_dir.mkdir(parents=True, exist_ok=True)
-        traj_dir.mkdir(parents=True, exist_ok=True)
+        obs_dir = pathlib.Path("data/eval/pi05_libero_topk1/libero_final_obs") / exp_name
+        traj_dir = pathlib.Path("data/eval/pi05_libero_topk1/libero_simple_trajectories") / exp_name
+        if not args.eval_only:
+            obs_dir.mkdir(parents=True, exist_ok=True)
+            traj_dir.mkdir(parents=True, exist_ok=True)
 
         task_episodes, task_successes = 0, 0
         base_seed = 7
@@ -93,12 +116,13 @@ def main():
             # -------- Resume logic: skip episodes that already have a saved trajectory --------
             existing_suffix = None
             existing_traj_path = None
-            for suffix_candidate in ("success", "failure"):
-                candidate = traj_dir / f"traj_task{task_id}_ep{episode_idx}_{suffix_candidate}.pkl"
-                if candidate.exists():
-                    existing_suffix = suffix_candidate
-                    existing_traj_path = candidate
-                    break
+            if not args.eval_only:
+                for suffix_candidate in ("success", "failure"):
+                    candidate = traj_dir / f"traj_task{task_id}_ep{episode_idx}_{suffix_candidate}.pkl"
+                    if candidate.exists():
+                        existing_suffix = suffix_candidate
+                        existing_traj_path = candidate
+                        break
 
             if existing_suffix is not None:
                 # Episode already completed in a previous run: load minimal info and skip rollout.
@@ -147,12 +171,14 @@ def main():
             action_plan = collections.deque()
             
             # Trajectory data: store obs, state, action at each step
-            episode_data = {
-                "prompt": str(task_description),
-                "observations": [],
-                "states": [],
-                "actions": [],
-            }
+            episode_data = None
+            if not args.eval_only:
+                episode_data = {
+                    "prompt": str(task_description),
+                    "observations": [],
+                    "states": [],
+                    "actions": [],
+                }
 
             t = 0
             done = False
@@ -205,9 +231,10 @@ def main():
                 action = action_plan.popleft()
                 
                 # Store observation, state, action for this timestep
-                episode_data["observations"].append(obs)
-                episode_data["states"].append(state)
-                episode_data["actions"].append(np.asarray(action, dtype=np.float32))
+                if episode_data is not None:
+                    episode_data["observations"].append(obs)
+                    episode_data["states"].append(state)
+                    episode_data["actions"].append(np.asarray(action, dtype=np.float32))
                 
                 obs, reward, done, info = env.step(action.tolist())
                 final_obs = obs  # Update final observation after each step
@@ -221,28 +248,28 @@ def main():
             total_episodes += 1
 
             suffix = "success" if done else "failure"
-            # Save the final observation dict as pickle
-            obs_path = obs_dir / f"final_obs_task{task_id}_ep{episode_idx}_{suffix}.pkl"
-            with obs_path.open("wb") as f:
-                pickle.dump(final_obs, f)
+            if not args.eval_only:
+                obs_path = obs_dir / f"final_obs_task{task_id}_ep{episode_idx}_{suffix}.pkl"
+                with obs_path.open("wb") as f:
+                    pickle.dump(final_obs, f)
 
-            # Save trajectory (observations, states, actions, prompt) as pickle
-            traj_path = traj_dir / f"traj_task{task_id}_ep{episode_idx}_{suffix}.pkl"
-            with traj_path.open("wb") as f:
-                pickle.dump(episode_data, f)
+                # Save trajectory (observations, states, actions, prompt) as pickle
+                traj_path = traj_dir / f"traj_task{task_id}_ep{episode_idx}_{suffix}.pkl"
+                with traj_path.open("wb") as f:
+                    pickle.dump(episode_data, f)
 
-            # Record summary for this episode
-            episode_summaries.append(
-                {
-                    "task_suite_name": task_suite_name,
-                    "task_id": int(task_id),
-                    "episode_idx": int(episode_idx),
-                    "success": bool(done),
-                    "prompt": str(task_description),
-                    "final_obs_path": str(obs_path),
-                    "trajectory_path": str(traj_path),
-                }
-            )
+                # Record summary for this episode
+                episode_summaries.append(
+                    {
+                        "task_suite_name": task_suite_name,
+                        "task_id": int(task_id),
+                        "episode_idx": int(episode_idx),
+                        "success": bool(done),
+                        "prompt": str(task_description),
+                        "final_obs_path": str(obs_path),
+                        "trajectory_path": str(traj_path),
+                    }
+                )
 
             logging.info(
                 f"Task {task_id} episode {episode_idx}: success={done}, "
@@ -250,8 +277,27 @@ def main():
                 f"total_success_rate={total_successes/total_episodes:.2f}"
             )
 
-    logging.info(f"Final total success rate: {total_successes/total_episodes:.2f} over {total_episodes} episodes.")
+        per_task_stats[int(task_id)] = {
+            "episodes": task_episodes,
+            "successes": task_successes,
+        }
 
+    logging.info(f"Final total success rate: {total_successes/total_episodes:.2f} over {total_episodes} episodes.")
+    
+    task_success_rates = []
+    for task_id in task_ids:
+        stats = per_task_stats.get(int(task_id), {"episodes": 0, "successes": 0})
+        episodes = stats["episodes"]
+        successes = stats["successes"]
+        success_rate = successes / episodes if episodes else 0.0
+        task_success_rates.append(
+            {
+                "task_id": int(task_id),
+                "episodes": episodes,
+                "successes": successes,
+                "success_rate": success_rate,
+            }
+        )
     # Save a JSON summary for all episodes in this run.
     summary = {
         "task_suite_name": task_suite_name,
@@ -260,13 +306,20 @@ def main():
         "total_episodes": total_episodes,
         "total_successes": total_successes,
         "episodes": episode_summaries,
+        "task_success_rates": task_success_rates,
     }
-    summary_dir = pathlib.Path("data/libero_simple_trajectories")
-    summary_dir.mkdir(parents=True, exist_ok=True)
-    summary_path = summary_dir / f"{task_suite_name}_tasks{'-'.join(map(str, task_ids))}_trials{num_trials_per_task}_summary.json"
+    summary_base_dir = pathlib.Path("data/libero_simple_trajectories")
+    default_summary_path = summary_base_dir / f"{task_suite_name}_tasks{'-'.join(map(str, task_ids))}_trials{num_trials_per_task}_summary.json"
+    if args.task_success_summary_path is None:
+        summary_base_dir.mkdir(parents=True, exist_ok=True)
+        summary_path = default_summary_path
+    else:
+        summary_path = args.task_success_summary_path
+        summary_path.parent.mkdir(parents=True, exist_ok=True)
     with summary_path.open("w") as f:
         json.dump(summary, f, indent=2)
 
-
+    logging.info("Wrote task success summary to %s", summary_path)
+    
 if __name__ == "__main__":
     main()

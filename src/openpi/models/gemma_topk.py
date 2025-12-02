@@ -40,15 +40,15 @@ class TopKModule(nn.Module):
       - This makes the paths of the parameters include the block index, which can be used
         by NNX filters to implement top-k layer freezing.
 
-    The forward semantics for training (no KV cache) match the original module.
-    KV caching for autoregressive decoding is intentionally not supported here.
+    The forward semantics (including KV caching) match the original module.
+    KV caching is fully supported for efficient autoregressive decoding.
     """
 
-    configs: Sequence[Config]  # list of configs, one for each expert
+    configs: Sequence[Config]
     embed_dtype: str
 
     dropout: float = 0.0
-    dropout_bdims: tuple[int, ...] = ()  # Every float is dropped independently.
+    dropout_bdims: tuple[int, ...] = ()
     adarms: bool = False
 
     def setup(self):
@@ -88,12 +88,13 @@ class TopKModule(nn.Module):
         adarms_cond: Sequence[at.Float[at.Array, "b _d"] | None] | None = None,
         *,
         kv_cache: KVCache | None = None,
-        deterministic: bool = True,  # noqa: FBT002
-    ) -> tuple[Sequence[at.Float[at.Array, "b _t _d"] | None], KVCache | None]:
-        """Forward pass matching the training semantics of the original Gemma module.
+        deterministic: bool = True, 
+    ) -> tuple[Sequence[at.Float[at.Array, "b _t _d"] | None], KVCache]:
+        """Forward pass with KV caching support.
 
-        KV caching is not supported; if a non-None `kv_cache` is passed, it will be ignored
-        and a fresh full-sequence computation will be performed.
+        When kv_cache is provided, uses cached key-value pairs from previous forward passes
+        to speed up autoregressive generation. The cache format matches the standard Gemma module:
+        a tuple of (cache_k, cache_v) where each has shape [layers, batch, seq, heads, dim].
         """
         embedded = jax.tree.map(lambda e: e.astype(self.embed_dtype) if e is not None else None, embedded)
         mask4d = jnp.asarray(mask)[:, None, :, :]
@@ -101,16 +102,46 @@ class TopKModule(nn.Module):
             adarms_cond = [None] * len(self.configs)
 
         xs = embedded
-        # We ignore any incoming kv_cache and do not return a meaningful cache. This matches
-        # the usage pattern in training, where kv_cache is always None.
-        for block in self.blocks:
-            xs, _ = block(xs, kv_cache=None, positions=positions, attn_mask=mask4d, adarms_cond=adarms_cond, deterministic=deterministic)
+        depth = len(self.blocks)
+        
+        # Handle KV cache: split by layer if provided
+        if kv_cache is not None:
+            # kv_cache is (cache_k, cache_v) -> each has shape [layers, batch, seq, heads, dim]
+            cache_k, cache_v = kv_cache
+            layer_caches = [(cache_k[i], cache_v[i]) for i in range(depth)]
+        else:
+            layer_caches = [None] * depth
+        
+        # Always collect caches
+        updated_cache_k = []
+        updated_cache_v = []
+        
+        for layer_idx, block in enumerate(self.blocks):
+            layer_cache = layer_caches[layer_idx]
+            xs, new_layer_cache = block(
+                xs, 
+                kv_cache=layer_cache, 
+                positions=positions, 
+                attn_mask=mask4d, 
+                adarms_cond=adarms_cond, 
+                deterministic=deterministic
+            )
+            
+            # Collect updated cache from this layer (even if creating new cache)
+            if new_layer_cache is not None:
+                new_k, new_v = new_layer_cache
+                updated_cache_k.append(new_k)
+                updated_cache_v.append(new_v)
 
         assert all(e.dtype == jnp.dtype(self.embed_dtype) for e in xs if e is not None)
+        
+        # Reconstruct the cache in the same format as standard Gemma!
+        new_kv_cache = (jnp.stack(updated_cache_k), jnp.stack(updated_cache_v))
 
-        return [
+        outputs = [
             f(e, a)[0] if e is not None else e for f, e, a in zip(self.final_norms, xs, adarms_cond, strict=True)
-        ], None
+        ]
+        return outputs, new_kv_cache
 
     def init(self, use_adarms: Sequence[bool]):
         """Convenience method for initializing all parameters.
@@ -118,7 +149,6 @@ class TopKModule(nn.Module):
         Mirrors `gemma.Module.init` so that `nnx_bridge.ToNNX.lazy_init(..., method="init", ...)`
         works consistently for both the standard and top-k Gemma modules.
         """
-        # Initialize embedder parameters.
         self.embed(jnp.zeros((1, 1), dtype=jnp.int32))
         # Run a dummy forward pass to initialize all block parameters.
         self(
@@ -129,5 +159,3 @@ class TopKModule(nn.Module):
                 jnp.zeros((1, c.width)) if u else None for u, c in zip(use_adarms, self.configs, strict=True)
             ],
         )
-
-
