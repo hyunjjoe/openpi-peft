@@ -112,7 +112,6 @@ class TopKModule(nn.Module):
         else:
             layer_caches = [None] * depth
         
-        # Always collect caches
         updated_cache_k = []
         updated_cache_v = []
         
@@ -135,7 +134,7 @@ class TopKModule(nn.Module):
 
         assert all(e.dtype == jnp.dtype(self.embed_dtype) for e in xs if e is not None)
         
-        # Reconstruct the cache in the same format as standard Gemma!
+        # Reconstruct cache in the same format as standard Gemma
         new_kv_cache = (jnp.stack(updated_cache_k), jnp.stack(updated_cache_v))
 
         outputs = [

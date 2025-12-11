@@ -7,11 +7,11 @@ import flax.nnx as nnx
 class TopKLayerFreezeConfig:
     """Configuration for top-k layer fine-tuning implemented as a freeze scheme.
 
-    This does *not* add any new parameters. Instead, it specifies which transformer
+    This does not add any new parameters. Instead, it specifies which transformer
     blocks of the (bridged) Gemma model should remain trainable.
 
     The resulting filter follows the convention used in `TrainConfig`:
-    it returns **True** for parameters that should be *frozen*.
+    it returns True for parameters that should be frozen.
     """
 
     # Total number of transformer blocks in the Gemma stack.
@@ -26,21 +26,20 @@ class TopKLayerFreezeConfig:
     def make_freeze_filter(self) -> nnx.filterlib.Filter:
         """Return an nnx filter that freezes all but the top-k Gemma layers.
 
-        We identify layers via the `"block_<idx>"` segment in the path under the
-        bridged LLM module (which contains `"llm"` in its path). This matches the
-        layout used by `gemma_topk.TopKModule`.
+        We identify layers via the "block_<idx>" segment in the path under the
+        bridged LLM module (which contains "llm" in its path). This matches the
+        layout used by gemma_topk.TopKModule.
 
-        Within the selected experts (see `include_pali` / `include_action`), this
+        Within the selected experts (see include_pali / include_action), this
         implements:
           - For blocks with idx < cutoff (= total_layers - k_unfrozen): freeze all
             parameters in those blocks.
           - For blocks with idx >= cutoff: freeze everything *except* the attention
             output projections (`attn_vec_einsum`) which remain unfrozen.
 
-        - If `k_unfrozen <= 0`, all LLM layers are frozen.
-        - If `k_unfrozen >= total_layers`, no layer-level freezing is applied.
+        - If k_unfrozen <= 0, all LLM layers are frozen.
+        - If k_unfrozen >= total_layers, no layer-level freezing is applied.
         """
-        # Edge cases.
         if self.k_unfrozen <= 0:
             # Freeze all LLM parameters (both experts).
             def freeze_all_llm(path: nnx.filterlib.PathParts, x) -> bool:  # noqa: ANN001
@@ -49,7 +48,6 @@ class TopKLayerFreezeConfig:
             return freeze_all_llm
 
         if self.k_unfrozen >= self.total_layers:
-            # No per-layer freezing needed.
             return nnx.Nothing
 
         cutoff = self.total_layers - self.k_unfrozen
@@ -64,7 +62,6 @@ class TopKLayerFreezeConfig:
             is_action = any(p.endswith("_1") for p in parts)
             is_pali = not is_action
 
-            # If an expert is explicitly excluded from top-k, freeze all its LLM params.
             if is_action and not self.include_action:
                 return True
             if is_pali and not self.include_pali:
@@ -74,7 +71,6 @@ class TopKLayerFreezeConfig:
             if not subject:
                 return False
 
-            # Find "block_<idx>" in the path, if present.
             for p in parts:
                 if p.startswith("block_"):
                     try:
